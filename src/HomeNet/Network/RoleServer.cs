@@ -324,35 +324,42 @@ namespace HomeNet.Network
 
       AutoResetEvent acceptTaskEvent = new AutoResetEvent(false);
 
-      while (!ShutdownSignaling.IsShutdown)
+      try
       {
-        log.Info("Waiting for new client.");
-        Task<TcpClient> acceptTask = Listener.AcceptTcpClientAsync();
-        acceptTask.ContinueWith(t => acceptTaskEvent.Set());
-
-        WaitHandle[] handles = new WaitHandle[] { acceptTaskEvent, ShutdownSignaling.ShutdownEvent };
-        int index = WaitHandle.WaitAny(handles);
-        if (handles[index] == ShutdownSignaling.ShutdownEvent)
+        while (!ShutdownSignaling.IsShutdown)
         {
-          log.Info("Shutdown detected.");
-          break;
-        }
+          log.Info("Waiting for new client.");
+          Task<TcpClient> acceptTask = Listener.AcceptTcpClientAsync();
+          acceptTask.ContinueWith(t => acceptTaskEvent.Set());
 
-        try
-        {
-          // acceptTask is finished here, asking for Result won't block.
-          TcpClient client = acceptTask.Result;
-          lock (clientQueueLock)
+          WaitHandle[] handles = new WaitHandle[] { acceptTaskEvent, ShutdownSignaling.ShutdownEvent };
+          int index = WaitHandle.WaitAny(handles);
+          if (handles[index] == ShutdownSignaling.ShutdownEvent)
           {
-            clientQueue.Enqueue(client);
+            log.Info("Shutdown detected.");
+            break;
           }
-          log.Info("New client '{0}' accepted.", client.Client.RemoteEndPoint);
-          clientQueueEvent.Set();
+
+          try
+          {
+            // acceptTask is finished here, asking for Result won't block.
+            TcpClient client = acceptTask.Result;
+            lock (clientQueueLock)
+            {
+              clientQueue.Enqueue(client);
+            }
+            log.Info("New client '{0}' accepted.", client.Client.RemoteEndPoint);
+            clientQueueEvent.Set();
+          }
+          catch (Exception e)
+          {
+            log.Error("Exception occurred: {0}", e.ToString());
+          }
         }
-        catch (Exception e)
-        {
-          log.Error("Exception occurred: {0}", e.ToString());
-        }
+      }
+      catch(Exception e)
+      {
+        log.Error("MIAO EXCEPTION: {0}", e.ToString());
       }
 
       acceptThreadFinished.Set();
@@ -372,42 +379,49 @@ namespace HomeNet.Network
 
       clientQueueHandlerThreadFinished.Reset();
 
-      while (!ShutdownSignaling.IsShutdown)
+      try
       {
-        WaitHandle[] handles = new WaitHandle[] { clientQueueEvent, ShutdownSignaling.ShutdownEvent };
-        int index = WaitHandle.WaitAny(handles);
-        if (handles[index] == ShutdownSignaling.ShutdownEvent)
+        while (!ShutdownSignaling.IsShutdown)
         {
-          log.Info("Shutdown detected.");
-          break;
-        }
-
-        log.Debug("New client in the queue detected, queue count is {0}.", clientQueue.Count);
-        bool queueEmpty = false;
-        while (!queueEmpty && !ShutdownSignaling.IsShutdown)
-        {
-          TcpClient tcpClient = null;
-          lock (clientQueueLock)
+          WaitHandle[] handles = new WaitHandle[] { clientQueueEvent, ShutdownSignaling.ShutdownEvent };
+          int index = WaitHandle.WaitAny(handles);
+          if (handles[index] == ShutdownSignaling.ShutdownEvent)
           {
-            if (clientQueue.Count > 0)
-              tcpClient = clientQueue.Peek();
+            log.Info("Shutdown detected.");
+            break;
           }
 
-          if (tcpClient != null)
+          log.Debug("New client in the queue detected, queue count is {0}.", clientQueue.Count);
+          bool queueEmpty = false;
+          while (!queueEmpty && !ShutdownSignaling.IsShutdown)
           {
-            int keepAliveInterval = IsServingClientsOnly ? ClientKeepAliveIntervalSeconds : NodeKeepAliveIntervalSeconds;
-
-            Client client = new Client(this, tcpClient, clientList.GetNewClientId(), UseTls, keepAliveInterval);
-            ClientHandlerAsync(client);
-
+            TcpClient tcpClient = null;
             lock (clientQueueLock)
             {
-              clientQueue.Dequeue();
-              queueEmpty = clientQueue.Count == 0;
+              if (clientQueue.Count > 0)
+                tcpClient = clientQueue.Peek();
             }
+
+            if (tcpClient != null)
+            {
+              int keepAliveInterval = IsServingClientsOnly ? ClientKeepAliveIntervalSeconds : NodeKeepAliveIntervalSeconds;
+
+              Client client = new Client(this, tcpClient, clientList.GetNewClientId(), UseTls, keepAliveInterval);
+              ClientHandlerAsync(client);
+
+              lock (clientQueueLock)
+              {
+                clientQueue.Dequeue();
+                queueEmpty = clientQueue.Count == 0;
+              }
+            }
+            else queueEmpty = true;
           }
-          else queueEmpty = true;
         }
+      }
+      catch (Exception e)
+      {
+        log.Error("MIAO EXCEPTION: {0}", e.ToString());
       }
 
       clientQueueHandlerThreadFinished.Set();
